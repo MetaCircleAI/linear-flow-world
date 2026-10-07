@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Linear Flow Playground</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div>
+          <h1>Linear Flow Playground</h1>
+          <p>Design Network -> Initialize -> Compute Theory -> Train -> Observe -> Compare</p>
+        </div>
+        <div class="status" id="status">Ready</div>
+      </header>
+
+      <main class="instrument">
+        <aside class="panel controls">
+          <section>
+            <h2>Architecture</h2>
+            <label>Depth <output id="depthValue">4</output></label>
+            <input id="depth" type="range" min="0" max="20" value="4">
+
+            <label>Width</label>
+            <select id="width">
+              <option>4</option>
+              <option>8</option>
+              <option selected>16</option>
+              <option>32</option>
+              <option>64</option>
+              <option>128</option>
+              <option>256</option>
+            </select>
+
+            <label>Alpha <output id="alphaValue">0.100</output></label>
+            <input id="alpha" type="range" min="-3" max="1" value="-1" step="0.05">
+
+            <label>Model seed</label>
+            <input id="modelSeed" type="number" value="7" step="1">
+
+            <label>Task seed</label>
+            <input id="taskSeed" type="number" value="23" step="1">
+          </section>
+
+          <section>
+            <h2>Optimization</h2>
+            <label>Optimizer</label>
+            <select id="optimizer">
+              <option selected>SGD</option>
+              <option>Adam</option>
+              <option>AdamW</option>
+            </select>
+
+            <label>Learning rate <output id="lrValue">0.0010</output></label>
+            <input id="lr" type="range" min="-5" max="-1" value="-3" step="0.05">
+
+            <label>Steps</label>
+            <input id="steps" type="number" value="320" min="1" max="5000" step="10">
+
+            <details>
+              <summary>Advanced</summary>
+              <label>Momentum / beta1</label>
+              <input id="beta1" type="number" value="0" min="0" max="0.999" step="0.001">
+              <label>Beta2</label>
+              <input id="beta2" type="number" value="0.999" min="0" max="0.9999" step="0.0001">
+              <label>Epsilon</label>
+              <input id="epsilon" type="number" value="1e-8" min="1e-12" step="1e-8">
+              <label>Weight decay</label>
+              <input id="weightDecay" type="number" value="0" min="0" step="0.0001">
+            </details>
+
+            <div class="button-row">
+              <button id="computeBtn">Compute</button>
+              <button id="trainBtn" class="primary">Train</button>
+            </div>
+            <button id="resetBtn" class="ghost">Reset topology</button>
+          </section>
+        </aside>
+
+        <section class="graph-zone">
+          <div class="panel graph-panel">
+            <div class="panel-head">
+              <h2>Network Graph</h2>
+              <span id="graphHint">Click two nodes to add a forward edge. Click an edge to remove it.</span>
+            </div>
+            <svg id="graph" viewBox="0 0 900 340" role="img" aria-label="Editable network graph"></svg>
+          </div>
+
+          <div class="panel plot-panel">
+            <div class="panel-head">
+              <h2>Training Dynamics</h2>
+              <div class="plot-tools">
+                <label class="check"><input id="logAxis" type="checkbox"> log y</label>
+                <button id="clearCompareBtn" class="ghost">Clear overlays</button>
+              </div>
+            </div>
+            <canvas id="plot" width="1200" height="230"></canvas>
+            <div id="hoverReadout" class="readout">Hover the curve</div>
+          </div>
+        </section>
+
+        <aside class="panel diagnostics">
+          <h2>Diagnostics</h2>
+          <dl>
+            <dt>Initial Loss</dt><dd id="diagL0">-</dd>
+            <dt>dL/dt | 0</dt><dd id="diagSlope">-</dd>
+            <dt>Gradient Norm^2</dt><dd id="diagGrad">-</dd>
+            <dt>NTK Slope</dt><dd id="diagNtk">-</dd>
+            <dt>D_NTK</dt><dd id="diagDev">-</dd>
+            <dt>Final Loss</dt><dd id="diagFinal">-</dd>
+            <dt>||M - A*||</dt><dd id="diagMap">-</dd>
+          </dl>
+        </aside>
+      </main>
+
+      <section class="gallery-section">
+        <div class="panel gallery-panel">
+          <div class="panel-head">
+            <h2>Experiment Gallery</h2>
+            <div class="gallery-tools">
+              <label class="sorter">Sort
+                <select id="sortGallery">
+                  <option value="created">Created</option>
+                  <option value="l0">Initial Loss</option>
+                  <option value="slope">Initial Slope</option>
+                  <option value="conv">Convergence Time</option>
+                  <option value="finalLoss">Final Loss</option>
+                  <option value="ntkDeviation">NTK Deviation</option>
+                  <option value="depth">Depth</option>
+                  <option value="width">Width</option>
+                  <option value="alpha">Alpha</option>
+                  <option value="lr">Learning Rate</option>
+                </select>
+              </label>
+              <button id="clearGalleryBtn" class="icon-button" aria-label="Remove all experiments" title="Remove all experiments">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M3 6h18"></path>
+                  <path d="M8 6V4h8v2"></path>
+                  <path d="M6 6l1 15h10l1-15"></path>
+                  <path d="M10 11v6"></path>
+                  <path d="M14 11v6"></path>
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div id="gallery" class="gallery"></div>
+        </div>
+      </section>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
