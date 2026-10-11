@@ -83,7 +83,7 @@
           <div class="panel graph-panel">
             <div class="panel-head">
               <h2>Network Graph</h2>
-              <span id="graphHint">Click two nodes to add a forward edge. Click an edge to remove it.</span>
+              <span id="graphHint">Click two same-dimension states to add an identity skip. Click a skip to remove it.</span>
             </div>
             <svg id="graph" viewBox="0 0 900 340" role="img" aria-label="Editable network graph"></svg>
           </div>
@@ -92,6 +92,7 @@
             <div class="panel-head">
               <h2>Training Dynamics</h2>
               <div class="plot-tools">
+                <label class="check"><input id="logXAxis" type="checkbox"> log x</label>
                 <label class="check"><input id="logAxis" type="checkbox"> log y</label>
                 <button id="clearCompareBtn" class="ghost">Clear overlays</button>
               </div>

@@ -144,12 +144,47 @@ summary { cursor: pointer; user-select: none; }
 
 .edge { stroke: #5f7175; stroke-width: 2.2; fill: none; cursor: pointer; }
 .edge.chain { stroke: #a4b5b2; }
-.edge:hover { stroke: var(--danger); stroke-width: 4; }
+.edge.skip-edge {
+  stroke: var(--accent-2);
+  stroke-width: 3.2;
+  stroke-dasharray: 7 7;
+}
+.edge.skip-edge:hover { stroke: var(--danger); stroke-width: 5; }
+.skip-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 24;
+  cursor: pointer;
+  pointer-events: stroke;
+}
+.skip-hit:hover + .skip-edge,
+.edge.skip-edge:has(+ .skip-hit:hover) {
+  stroke: var(--danger);
+  stroke-width: 5;
+}
 .node { cursor: pointer; }
 .node circle { fill: #141b1c; stroke: #d8e8e4; stroke-width: 2; }
 .node.selected circle { stroke: var(--accent-2); stroke-width: 4; }
 .node text { fill: var(--text); font-size: 13px; text-anchor: middle; dominant-baseline: middle; pointer-events: none; }
 .node .caption { fill: var(--muted); font-size: 11px; }
+.weight-matrix rect {
+  fill: #0f1617;
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+.weight-matrix text {
+  fill: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  pointer-events: none;
+}
+.weight-matrix .caption {
+  fill: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
+}
 
 .diagnostics dl { margin: 12px 0 0; }
 .diagnostics dt {

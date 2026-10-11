@@ -2,12 +2,13 @@
 
 const $ = (id) => document.getElementById(id);
 const state = {
-  dim: 3,
+  dim: 16,
   samples: 12,
   selectedNode: null,
   arch: null,
   task: null,
   model: null,
+  trainedModel: null,
   theory: null,
   currentRun: null,
   overlays: [],
@@ -108,7 +109,8 @@ function makeArch(depth, width, previousEdges) {
   for (let i = 0; i < last; i++) edges.push({ from: i, to: i + 1, chain: true });
   if (previousEdges) {
     for (const e of previousEdges) {
-      if (e.to <= last && e.from < e.to && !edges.some((x) => x.from === e.from && x.to === e.to)) {
+      const compatible = e.to <= last && e.from < e.to && dims[e.from] === dims[e.to];
+      if (compatible && !edges.some((x) => !x.chain && x.from === e.from && x.to === e.to)) {
         edges.push({ from: e.from, to: e.to, chain: false });
       }
     }
@@ -121,12 +123,28 @@ function initModel(arch, seed, alpha) {
   return {
     edges: arch.edges.map((e) => {
       const rows = arch.dims[e.to], cols = arch.dims[e.from];
+      if (!e.chain) return { ...e, rows, cols };
       const w = new Float64Array(rows * cols);
       const scale = alpha / Math.sqrt(cols);
       for (let i = 0; i < w.length; i++) w[i] = rng.normal() * scale;
       return { ...e, rows, cols, w, v: new Float64Array(w.length), m: new Float64Array(w.length), t: 0 };
     })
   };
+}
+
+function initModelPreservingWeights(arch, seed, alpha, previousModel) {
+  const next = initModel(arch, seed, alpha);
+  if (!previousModel) return next;
+  for (const edge of next.edges) {
+    if (!edge.chain || !edge.w) continue;
+    const prev = previousModel.edges.find((e) => e.chain && e.from === edge.from && e.to === edge.to && e.w?.length === edge.w.length);
+    if (!prev) continue;
+    edge.w.set(prev.w);
+    if (prev.v?.length === edge.v.length) edge.v.set(prev.v);
+    if (prev.m?.length === edge.m.length) edge.m.set(prev.m);
+    edge.t = prev.t || 0;
+  }
+  return next;
 }
 
 function matVec(A, x) {
@@ -140,6 +158,10 @@ function forward(model, arch, x) {
     for (const e of model.edges) {
       if (e.to !== n) continue;
       const src = acts[e.from], dst = acts[n];
+      if (!e.chain) {
+        for (let k = 0; k < dst.length; k++) dst[k] += src[k];
+        continue;
+      }
       for (let r = 0; r < e.rows; r++) {
         let sum = 0;
         const off = r * e.cols;
@@ -152,7 +174,7 @@ function forward(model, arch, x) {
 }
 
 function lossAndGrad(model, arch, task) {
-  const grads = model.edges.map((e) => new Float64Array(e.w.length));
+  const grads = model.edges.map((e) => e.chain ? new Float64Array(e.w.length) : null);
   let loss = 0;
   const layerGradNorms = model.edges.map(() => 0);
   const residuals = [];
@@ -172,6 +194,10 @@ function lossAndGrad(model, arch, task) {
         const e = model.edges[ei];
         if (e.to !== n) continue;
         const d = deltas[e.to], a = acts[e.from], g = grads[ei], up = deltas[e.from];
+        if (!e.chain) {
+          for (let k = 0; k < up.length; k++) up[k] += d[k];
+          continue;
+        }
         for (let rix = 0; rix < e.rows; rix++) {
           const doff = rix * e.cols;
           for (let c = 0; c < e.cols; c++) {
@@ -185,6 +211,10 @@ function lossAndGrad(model, arch, task) {
   let gradNorm2 = 0;
   for (let i = 0; i < grads.length; i++) {
     let n2 = 0;
+    if (!grads[i]) {
+      layerGradNorms[i] = 0;
+      continue;
+    }
     for (const v of grads[i]) n2 += v * v;
     layerGradNorms[i] = Math.sqrt(n2);
     gradNorm2 += n2;
@@ -196,6 +226,7 @@ function applyStep(model, grads, c) {
   const opt = c.optimizer;
   for (let ei = 0; ei < model.edges.length; ei++) {
     const e = model.edges[ei], g = grads[ei];
+    if (!e.chain) continue;
     e.t += 1;
     for (let i = 0; i < e.w.length; i++) {
       let gi = g[i];
@@ -220,16 +251,16 @@ function cloneModel(model) {
   return {
     edges: model.edges.map((e) => ({
       ...e,
-      w: new Float64Array(e.w),
-      v: new Float64Array(e.v),
-      m: new Float64Array(e.m),
+      w: e.w ? new Float64Array(e.w) : undefined,
+      v: e.v ? new Float64Array(e.v) : undefined,
+      m: e.m ? new Float64Array(e.m) : undefined,
       t: e.t
     }))
   };
 }
 
 function paramCount(model) {
-  return model.edges.reduce((s, e) => s + e.w.length, 0);
+  return model.edges.reduce((s, e) => s + (e.w?.length || 0), 0);
 }
 
 function gradientVectorForOutput(model, arch, x, outIndex) {
@@ -242,6 +273,11 @@ function gradientVectorForOutput(model, arch, x, outIndex) {
       const e = model.edges[ei];
       if (e.to !== n) continue;
       const d = deltas[e.to], a = acts[e.from], up = deltas[e.from];
+      if (!e.chain) {
+        for (let k = 0; k < up.length; k++) up[k] += d[k];
+        vec[ei] = null;
+        continue;
+      }
       const g = new Float64Array(e.w.length);
       for (let r = 0; r < e.rows; r++) {
         const off = r * e.cols;
@@ -267,7 +303,7 @@ function computeTheory(model, arch, task, base) {
     slope: -base.gradNorm2,
     ntkSlope: NaN,
     ntkPrediction: [],
-    ntkSkipped: ops > 45000000
+    ntkSkipped: ops > 100000000
   };
   if (theory.ntkSkipped) return theory;
 
@@ -287,6 +323,7 @@ function computeTheory(model, arch, task, base) {
       let dot = 0;
       for (let ei = 0; ei < model.edges.length; ei++) {
         const ga = J[a][ei], gb = J[b][ei];
+        if (!ga || !gb) continue;
         for (let p = 0; p < ga.length; p++) dot += ga[p] * gb[p];
       }
       K[a][b] = dot;
@@ -333,6 +370,12 @@ function effectiveMap(model, arch) {
   for (let n = 1; n < arch.dims.length; n++) {
     for (const e of model.edges) {
       if (e.to !== n) continue;
+      if (!e.chain) {
+        for (let r = 0; r < mats[n].length; r++) {
+          for (let k = 0; k < state.dim; k++) mats[n][r][k] += mats[e.from][r][k];
+        }
+        continue;
+      }
       for (let r = 0; r < e.rows; r++) {
         const off = r * e.cols;
         for (let c = 0; c < e.cols; c++) {
@@ -365,6 +408,7 @@ function deviation(actual, ntk) {
 
 function rebuild(resetEdges = true) {
   const c = cfg();
+  state.dim = c.width;
   $("depthValue").textContent = c.depth;
   $("alphaValue").textContent = c.alpha.toPrecision(3);
   $("lrValue").textContent = c.lr.toPrecision(3);
@@ -372,6 +416,7 @@ function rebuild(resetEdges = true) {
   state.arch = makeArch(c.depth, c.width, previous);
   state.task = makeTask(c.taskSeed);
   state.model = initModel(state.arch, c.modelSeed, c.alpha);
+  state.trainedModel = null;
   state.selectedNode = null;
   state.currentRun = null;
   recompute();
@@ -381,6 +426,7 @@ function recompute() {
   const c = cfg();
   const base = lossAndGrad(state.model, state.arch, state.task);
   state.theory = computeTheory(state.model, state.arch, state.task, base);
+  state.trainedModel = null;
   updateDiagnostics(base.loss, NaN);
   drawGraph();
   drawPlot();
@@ -406,6 +452,7 @@ async function train() {
     if (step % every === 0 || step === c.steps) {
       actual.push({ step, t: step * c.lr, loss: lossAndGrad(model, state.arch, state.task).loss });
       state.currentRun = { actual, ntk: state.theory.ntkPrediction || [], color: palette[0], maxStep: c.steps };
+      state.trainedModel = model;
       drawPlot();
       updateDiagnostics(actual[actual.length - 1].loss, NaN);
       await new Promise(requestAnimationFrame);
@@ -413,7 +460,7 @@ async function train() {
   }
   const ntk = ntkTrajectory(state.theory, c);
   const dev = deviation(actual, ntk);
-  state.model = model;
+  state.trainedModel = model;
   state.theory.ntkPrediction = ntk;
   const finalLoss = actual[actual.length - 1].loss;
   const card = makeExperiment(c, actual, ntk, dev, firstStepDelta, model);
@@ -452,7 +499,7 @@ function makeExperiment(c, actual, ntk, dev, firstStepDelta, model) {
     },
     actual,
     ntk,
-    weights: model.edges.map((e) => Array.from(e.w))
+    weights: model.edges.map((e) => e.w ? Array.from(e.w) : null)
   };
 }
 
@@ -464,7 +511,8 @@ function updateDiagnostics(finalLoss, dev) {
   $("diagNtk").textContent = Number.isFinite(th.ntkSlope) ? fmt(th.ntkSlope) : "skipped";
   $("diagDev").textContent = Number.isFinite(dev) ? fmt(dev) : "-";
   $("diagFinal").textContent = Number.isFinite(finalLoss) ? fmt(finalLoss) : "-";
-  $("diagMap").textContent = state.model ? fmt(mapDistance(effectiveMap(state.model, state.arch), state.task.A)) : "-";
+  const mapModel = state.trainedModel || state.model;
+  $("diagMap").textContent = mapModel ? fmt(mapDistance(effectiveMap(mapModel, state.arch), state.task.A)) : "-";
 }
 
 function drawGraph() {
@@ -473,21 +521,71 @@ function drawGraph() {
   const count = state.arch.dims.length;
   const pts = state.arch.dims.map((_, i) => ({
     x: 70 + i * (760 / Math.max(1, count - 1)),
-    y: i === 0 || i === count - 1 ? 170 : 170 + Math.sin(i * 1.7) * 34
+    y: 170
   }));
+  const weights = [];
+  for (let i = 0; i < count - 1; i++) {
+    const a = pts[i], b = pts[i + 1];
+    weights[i] = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  }
   for (const e of state.arch.edges) {
     const a = pts[e.from], b = pts[e.to];
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    const bend = Math.min(90, Math.abs(b.x - a.x) * 0.35);
-    path.setAttribute("d", `M ${a.x} ${a.y} C ${a.x + bend} ${a.y - 80}, ${b.x - bend} ${b.y - 80}, ${b.x} ${b.y}`);
-    path.setAttribute("class", "edge" + (e.chain ? " chain" : ""));
-    path.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      state.arch.edges = state.arch.edges.filter((x) => !(x.from === e.from && x.to === e.to));
-      state.model = initModel(state.arch, cfg().modelSeed, cfg().alpha);
-      recompute();
-    });
-    svg.appendChild(path);
+    if (e.chain) {
+      const w = weights[e.from];
+      const left = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      left.setAttribute("x1", a.x + 25);
+      left.setAttribute("y1", a.y);
+      left.setAttribute("x2", w.x - 24);
+      left.setAttribute("y2", w.y);
+      left.setAttribute("class", "edge chain");
+      const right = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      right.setAttribute("x1", w.x + 24);
+      right.setAttribute("y1", w.y);
+      right.setAttribute("x2", b.x - 25);
+      right.setAttribute("y2", b.y);
+      right.setAttribute("class", "edge chain");
+      svg.append(left, right);
+    } else {
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      const bend = Math.min(120, Math.abs(b.x - a.x) * 0.32);
+      const lift = 70 + 12 * (e.to - e.from);
+      const d = `M ${a.x} ${a.y - 24} C ${a.x + bend} ${a.y - lift}, ${b.x - bend} ${b.y - lift}, ${b.x} ${b.y - 24}`;
+      const removeSkip = (ev) => {
+        ev.stopPropagation();
+        state.arch.edges = state.arch.edges.filter((x) => x.chain || x.from !== e.from || x.to !== e.to);
+        state.model = initModelPreservingWeights(state.arch, cfg().modelSeed, cfg().alpha, state.model);
+        state.trainedModel = null;
+        recompute();
+      };
+      path.setAttribute("d", d);
+      path.setAttribute("class", "edge skip-edge");
+      path.addEventListener("click", removeSkip);
+      const hit = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      hit.setAttribute("d", d);
+      hit.setAttribute("class", "skip-hit");
+      hit.addEventListener("click", removeSkip);
+      svg.append(path, hit);
+    }
+  }
+  for (let i = 0; i < count - 1; i++) {
+    const w = weights[i];
+    const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    g.setAttribute("class", "weight-matrix");
+    g.setAttribute("transform", `translate(${w.x},${w.y})`);
+    const box = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    box.setAttribute("x", -24);
+    box.setAttribute("y", -19);
+    box.setAttribute("width", 48);
+    box.setAttribute("height", 38);
+    box.setAttribute("rx", 4);
+    const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    t.textContent = `W${i + 1}`;
+    const cap = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    cap.setAttribute("class", "caption");
+    cap.setAttribute("y", 35);
+    cap.textContent = `${state.arch.dims[i + 1]}x${state.arch.dims[i]}`;
+    g.append(box, t, cap);
+    svg.appendChild(g);
   }
   for (let i = 0; i < count; i++) {
     const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
@@ -497,7 +595,7 @@ function drawGraph() {
     const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
     c.setAttribute("r", i === 0 || i === count - 1 ? 30 : 24);
     const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    t.textContent = i === 0 ? "IN" : i === count - 1 ? "OUT" : String(i);
+    t.textContent = i === 0 ? "x" : i === count - 1 ? "yhat" : `h${i}`;
     const cap = document.createElementNS("http://www.w3.org/2000/svg", "text");
     cap.setAttribute("class", "caption");
     cap.setAttribute("y", 48);
@@ -512,13 +610,18 @@ function clickNode(i) {
     state.selectedNode = i;
   } else {
     const a = state.selectedNode, b = i;
-    if (a < b && !state.arch.edges.some((e) => e.from === a && e.to === b)) {
+    const compatible = state.arch.dims[a] === state.arch.dims[b];
+    const hasSkip = state.arch.edges.some((e) => !e.chain && e.from === a && e.to === b);
+    if (a < b && compatible && !hasSkip) {
       state.arch.edges.push({ from: a, to: b, chain: false });
-      state.model = initModel(state.arch, cfg().modelSeed, cfg().alpha);
+      state.model = initModelPreservingWeights(state.arch, cfg().modelSeed, cfg().alpha, state.model);
+      state.trainedModel = null;
       state.selectedNode = null;
       recompute();
       return;
     }
+    if (a < b && !compatible) setStatus("Skip needs matching state dimensions");
+    if (a < b && compatible && hasSkip) setStatus("Skip already exists");
     state.selectedNode = i === a ? null : i;
   }
   drawGraph();
@@ -537,6 +640,7 @@ function drawPlot() {
   }
   state.overlays.forEach((e, i) => series.push({ label: e.name, pts: e.actual, color: palette[(i + 2) % palette.length], dash: [] }));
   const log = $("logAxis").checked;
+  const logX = $("logXAxis").checked;
   const all = series.flatMap((s) => s.pts);
   const configuredSteps = cfg().steps;
   const runMaxStep = state.currentRun?.maxStep ?? configuredSteps;
@@ -552,14 +656,18 @@ function drawPlot() {
     minY = 0;
     maxY = maxY <= 0 ? 1 : maxY * 1.08;
   }
-  const sx = (x) => pad.l + (x / maxX) * (w - pad.l - pad.r);
+  const sx = (x) => {
+    const v = logX ? Math.log1p(Math.max(0, x)) : x;
+    const b = logX ? Math.log1p(maxX) : maxX;
+    return pad.l + (v / b) * (w - pad.l - pad.r);
+  };
   const sy = (y) => {
     const v = log ? Math.log10(Math.max(y, 1e-14)) : y;
     const a = log ? Math.log10(minY) : minY;
     const b = log ? Math.log10(maxY) : maxY;
     return h - pad.b - ((v - a) / (b - a)) * (h - pad.t - pad.b);
   };
-  const xTicks = linearTicks(0, maxX, 6);
+  const xTicks = logX ? logTicks(1, maxX + 1).map((tick) => tick - 1).filter((tick) => tick >= 0 && tick <= maxX) : linearTicks(0, maxX, 6);
   const yTicks = log ? logTicks(minY, maxY) : linearTicks(minY, maxY, 6);
 
   ctx.strokeStyle = "#2d3638";
@@ -588,7 +696,7 @@ function drawPlot() {
   ctx.fillStyle = "#cfe0dc";
   ctx.textAlign = "center";
   ctx.textBaseline = "bottom";
-  ctx.fillText("step", pad.l + (w - pad.l - pad.r) / 2, h - 14);
+  ctx.fillText(logX ? "log(step + 1)" : "step", pad.l + (w - pad.l - pad.r) / 2, h - 14);
   ctx.save();
   ctx.translate(20, pad.t + (h - pad.t - pad.b) / 2);
   ctx.rotate(-Math.PI / 2);
@@ -631,6 +739,17 @@ function loadGallery() {
 function normalizeExperiment(exp) {
   if (!exp.config) return exp;
   if (exp.config.alpha == null && exp.config.sigma != null) exp.config.alpha = exp.config.sigma;
+  if (exp.arch?.dims && Array.isArray(exp.arch.edges)) {
+    const chainKeys = new Set();
+    for (let i = 0; i < exp.arch.dims.length - 1; i++) chainKeys.add(`${i}:${i + 1}`);
+    exp.arch.edges = exp.arch.edges
+      .filter((e) => e.from < e.to && e.to < exp.arch.dims.length)
+      .map((e) => ({ from: e.from, to: e.to, chain: Boolean(e.chain || chainKeys.has(`${e.from}:${e.to}`)) }))
+      .filter((e, i, edges) => {
+        if (!e.chain && exp.arch.dims[e.from] !== exp.arch.dims[e.to]) return false;
+        return edges.findIndex((x) => x.chain === e.chain && x.from === e.from && x.to === e.to) === i;
+      });
+  }
   return exp;
 }
 
@@ -649,11 +768,16 @@ function restoreExperiment(exp) {
   $("epsilon").value = exp.config.epsilon;
   $("weightDecay").value = exp.config.weightDecay;
   state.arch = exp.arch;
+  state.dim = state.arch.dims[0];
   state.task = makeTask(exp.config.taskSeed);
-  state.model = initModel(state.arch, exp.config.modelSeed, exp.config.alpha);
-  state.model.edges.forEach((e, i) => e.w.set(exp.weights[i]));
-  const base = lossAndGrad(state.model, state.arch, state.task);
   const initialModel = initModel(state.arch, exp.config.modelSeed, exp.config.alpha);
+  const restoredModel = cloneModel(initialModel);
+  restoredModel.edges.forEach((e, i) => {
+    if (e.w && exp.weights?.[i]) e.w.set(exp.weights[i].slice(0, e.w.length));
+  });
+  state.model = initialModel;
+  state.trainedModel = restoredModel;
+  const base = lossAndGrad(restoredModel, state.arch, state.task);
   state.theory = computeTheory(initialModel, state.arch, state.task, lossAndGrad(initialModel, state.arch, state.task));
   state.currentRun = { actual: exp.actual, ntk: exp.ntk, color: palette[0], maxStep: exp.config.steps };
   updateLabels();
@@ -724,6 +848,7 @@ function wire() {
   $("trainBtn").addEventListener("click", train);
   $("resetBtn").addEventListener("click", () => rebuild(true));
   $("logAxis").addEventListener("change", drawPlot);
+  $("logXAxis").addEventListener("change", drawPlot);
   $("clearCompareBtn").addEventListener("click", () => { state.overlays = []; renderGallery(); drawPlot(); });
   $("sortGallery").addEventListener("change", renderGallery);
   $("clearGalleryBtn").addEventListener("click", () => {
@@ -741,7 +866,8 @@ function wire() {
     const canvasX = (ev.clientX - rect.left) * ($("plot").width / rect.width);
     const plotWidth = $("plot").width - pad.l - pad.r;
     const maxStep = Math.max(state.currentRun.maxStep || cfg().steps, 1);
-    const step = Math.max(0, Math.min(maxStep, ((canvasX - pad.l) / plotWidth) * maxStep));
+    const ratio = Math.max(0, Math.min(1, (canvasX - pad.l) / plotWidth));
+    const step = $("logXAxis").checked ? Math.expm1(ratio * Math.log1p(maxStep)) : ratio * maxStep;
     const p = state.currentRun.actual.reduce((best, point) => Math.abs(point.step - step) < Math.abs(best.step - step) ? point : best, state.currentRun.actual[0]);
     $("hoverReadout").textContent = `step ${p.step}  loss ${fmt(p.loss)}`;
   });
