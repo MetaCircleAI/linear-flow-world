@@ -2,7 +2,7 @@
 
 const $ = (id) => document.getElementById(id);
 const state = {
-  dim: 16,
+  dim: 3,
   samples: 12,
   selectedNode: null,
   arch: null,
@@ -38,6 +38,7 @@ function cfg() {
   return {
     depth: Math.max(0, Number($("depth").value)),
     width: Number($("width").value),
+    ioDim: Math.max(1, Number($("ioDim").value)),
     alpha,
     modelSeed: Number($("modelSeed").value),
     taskSeed: Number($("taskSeed").value),
@@ -176,6 +177,7 @@ function forward(model, arch, x) {
 function lossAndGrad(model, arch, task) {
   const grads = model.edges.map((e) => e.chain ? new Float64Array(e.w.length) : null);
   let loss = 0;
+  const norm = task.X.length * state.dim;
   const layerGradNorms = model.edges.map(() => 0);
   const residuals = [];
   for (let s = 0; s < task.X.length; s++) {
@@ -185,8 +187,8 @@ function lossAndGrad(model, arch, task) {
     const r = new Float64Array(state.dim);
     for (let i = 0; i < state.dim; i++) {
       r[i] = out[i] - task.Y[s][i];
-      deltas[deltas.length - 1][i] = r[i] / task.X.length;
-      loss += 0.5 * r[i] * r[i] / task.X.length;
+      deltas[deltas.length - 1][i] = r[i] / norm;
+      loss += 0.5 * r[i] * r[i] / norm;
     }
     residuals.push(Array.from(r));
     for (let n = arch.dims.length - 1; n >= 1; n--) {
@@ -332,7 +334,8 @@ function computeTheory(model, arch, task, base) {
   }
   let rKr = 0;
   for (let i = 0; i < rows; i++) for (let j = 0; j < rows; j++) rKr += residual[i] * K[i][j] * residual[j];
-  theory.ntkSlope = -rKr / (task.X.length * task.X.length);
+  const norm = task.X.length * state.dim;
+  theory.ntkSlope = -rKr / (norm * norm);
   theory.sanity = Math.abs((-theory.ntkSlope) - theory.gradNorm2) / Math.max(1e-12, theory.gradNorm2);
   theory.K = K;
   theory.r0 = residual;
@@ -341,7 +344,7 @@ function computeTheory(model, arch, task, base) {
 
 function ntkTrajectory(theory, c) {
   if (!theory.K) return [];
-  const n = state.samples, dt = c.lr / n;
+  const n = state.samples, d = state.dim, dt = c.lr / (n * d);
   let r = new Float64Array(theory.r0);
   const out = [{ step: 0, t: 0, loss: theory.l0 }];
   for (let step = 1; step <= c.steps; step++) {
@@ -355,7 +358,7 @@ function ntkTrajectory(theory, c) {
     if (step % Math.max(1, Math.floor(c.steps / 240)) === 0 || step === c.steps) {
       let l = 0;
       for (const v of r) l += v * v;
-      out.push({ step, t: step * c.lr, loss: 0.5 * l / n });
+      out.push({ step, t: step * c.lr, loss: 0.5 * l / (n * d) });
     }
   }
   return out;
@@ -408,7 +411,7 @@ function deviation(actual, ntk) {
 
 function rebuild(resetEdges = true) {
   const c = cfg();
-  state.dim = c.width;
+  state.dim = c.ioDim;
   $("depthValue").textContent = c.depth;
   $("alphaValue").textContent = c.alpha.toPrecision(3);
   $("lrValue").textContent = c.lr.toPrecision(3);
@@ -739,6 +742,7 @@ function loadGallery() {
 function normalizeExperiment(exp) {
   if (!exp.config) return exp;
   if (exp.config.alpha == null && exp.config.sigma != null) exp.config.alpha = exp.config.sigma;
+  if (exp.config.ioDim == null) exp.config.ioDim = exp.arch?.dims?.[0] || state.dim;
   if (exp.arch?.dims && Array.isArray(exp.arch.edges)) {
     const chainKeys = new Set();
     for (let i = 0; i < exp.arch.dims.length - 1; i++) chainKeys.add(`${i}:${i + 1}`);
@@ -757,6 +761,7 @@ function restoreExperiment(exp) {
   normalizeExperiment(exp);
   $("depth").value = Math.max(0, exp.config.depth);
   $("width").value = exp.config.width;
+  $("ioDim").value = exp.config.ioDim;
   $("alpha").value = Math.log10(exp.config.alpha);
   $("modelSeed").value = exp.config.modelSeed;
   $("taskSeed").value = exp.config.taskSeed;
@@ -801,7 +806,7 @@ function renderGallery() {
     normalizeExperiment(exp);
     el.className = "card" + (state.overlays.some((o) => o.id === exp.id) ? " selected" : "");
     el.innerHTML = `<div class="card-head"><span>${exp.name}</span><span>${fmt(exp.diagnostics.finalLoss)}</span></div>
-      <small>D${exp.config.depth} W${exp.config.width} alpha ${fmt(exp.config.alpha)} ${exp.config.optimizer} lr ${fmt(exp.config.lr)}</small>
+      <small>D${exp.config.depth} W${exp.config.width} io ${exp.config.ioDim} alpha ${fmt(exp.config.alpha)} ${exp.config.optimizer} lr ${fmt(exp.config.lr)}</small>
       <canvas class="spark" width="260" height="42"></canvas>`;
     el.addEventListener("click", (ev) => {
       if (ev.shiftKey) {
@@ -838,7 +843,7 @@ function updateLabels() {
 }
 
 function wire() {
-  ["depth", "width", "alpha", "modelSeed", "taskSeed"].forEach((id) => $(id).addEventListener("change", () => rebuild(id !== "width" && id !== "depth" ? false : true)));
+  ["depth", "width", "ioDim", "alpha", "modelSeed", "taskSeed"].forEach((id) => $(id).addEventListener("change", () => rebuild(["depth", "width", "ioDim"].includes(id))));
   ["depth", "alpha", "lr"].forEach((id) => $(id).addEventListener("input", updateLabels));
   $("optimizer").addEventListener("change", () => {
     if ($("optimizer").value === "SGD" && Number($("beta1").value) === 0.9) $("beta1").value = 0;

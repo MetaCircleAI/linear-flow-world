@@ -25,7 +25,11 @@
 
             <label>Width</label>
             <select id="width">
+              <option>1</option>
+              <option>2</option>
+              <option>3</option>
               <option>4</option>
+              <option>5</option>
               <option>8</option>
               <option selected>16</option>
               <option>32</option>
@@ -33,6 +37,9 @@
               <option>128</option>
               <option>256</option>
             </select>
+
+            <label>Input/output dim</label>
+            <input id="ioDim" type="number" value="3" min="1" max="64" step="1">
 
             <label>Alpha <output id="alphaValue">0.100</output></label>
             <input id="alpha" type="range" min="-3" max="1" value="-1" step="0.05">
